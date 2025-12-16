@@ -4,30 +4,27 @@
  * WorkerSQL CLI
  *
  * Interactive SQL and AI interface for WorkerSQL databases.
- *
- * Usage:
- *   wsql [options] [database-path]
- *
- * Options:
- *   --ai                 Enable AI mode
- *   --api-key <key>      OpenAI API key (or set OPENAI_API_KEY env)
- *   --base-url <url>     OpenAI-compatible base URL (or set OPENAI_BASE_URL env)
- *   --model <model>      Model name (default: gpt-4o-mini)
- *   --memory             Use in-memory storage (no persistence)
- *   -h, --help           Show help
- *
- * Environment:
- *   OPENAI_API_KEY       API key for AI mode
- *   OPENAI_BASE_URL      Base URL for OpenAI-compatible API
- *   OPENAI_MODEL         Model name
+ * Inspired by Claude Code's beautiful interface.
  */
 
 import * as readline from 'node:readline';
 import { WorkerSQL } from './index.js';
 import { AIClient } from './ai/client.js';
 
-interface CliOptions {
-  aiMode: boolean;
+// ANSI escape codes
+const RESET = '\x1b[0m';
+const BOLD = '\x1b[1m';
+const DIM = '\x1b[2m';
+const CYAN = '\x1b[36m';
+const YELLOW = '\x1b[33m';
+const GREEN = '\x1b[32m';
+const GRAY = '\x1b[90m';
+const WHITE = '\x1b[37m';
+const BG_GRAY = '\x1b[48;5;236m';
+const BG_CYAN = '\x1b[48;5;24m';
+const BG_YELLOW = '\x1b[48;5;136m';
+
+interface Config {
   apiKey: string | undefined;
   baseUrl: string | undefined;
   model: string;
@@ -35,317 +32,438 @@ interface CliOptions {
   memory: boolean;
 }
 
-function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = {
-    aiMode: false,
-    apiKey: process.env.OPENAI_API_KEY,
-    baseUrl: process.env.OPENAI_BASE_URL,
-    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-    dbPath: './wsql-data',
-    memory: false,
-  };
+const config: Config = {
+  apiKey: process.env.OPENAI_API_KEY,
+  baseUrl: process.env.OPENAI_BASE_URL,
+  model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  dbPath: './wsql-data',
+  memory: false,
+};
 
+let currentMode: 'sql' | 'ai' = 'sql';
+let db: WorkerSQL;
+let aiClient: AIClient | null = null;
+let rl: readline.Interface;
+let terminalHeight = process.stdout.rows || 24;
+let terminalWidth = process.stdout.columns || 80;
+
+function parseArgs(args: string[]): void {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
     if (arg === '--ai' || arg === '-a') {
-      options.aiMode = true;
+      currentMode = 'ai';
     } else if (arg === '--api-key' || arg === '-k') {
-      options.apiKey = args[++i];
+      config.apiKey = args[++i];
     } else if (arg === '--base-url' || arg === '-u') {
-      options.baseUrl = args[++i];
+      config.baseUrl = args[++i];
     } else if (arg === '--model' || arg === '-m') {
-      options.model = args[++i];
+      config.model = args[++i];
     } else if (arg === '--memory') {
-      options.memory = true;
+      config.memory = true;
     } else if (arg === '-h' || arg === '--help') {
       showHelp();
       process.exit(0);
     } else if (!arg.startsWith('-')) {
-      options.dbPath = arg;
+      config.dbPath = arg;
     }
   }
-
-  return options;
 }
 
 function showHelp(): void {
   console.log(`
-WorkerSQL CLI - Interactive SQL and AI database interface
+${BOLD}WorkerSQL CLI${RESET} - Interactive SQL and AI database interface
 
-Usage:
+${BOLD}Usage:${RESET}
   wsql [options] [database-path]
 
-Options:
-  --ai, -a              Enable AI mode (natural language queries)
-  --api-key, -k <key>   OpenAI API key (or set OPENAI_API_KEY env)
-  --base-url, -u <url>  OpenAI-compatible base URL (or set OPENAI_BASE_URL env)
+${BOLD}Options:${RESET}
+  --ai, -a              Start in AI mode
+  --api-key, -k <key>   OpenAI API key
+  --base-url, -u <url>  OpenAI-compatible base URL
   --model, -m <model>   Model name (default: gpt-4o-mini)
-  --memory              Use in-memory storage (no persistence)
+  --memory              Use in-memory storage
   -h, --help            Show this help
 
-Environment Variables:
-  OPENAI_API_KEY        API key for AI mode
-  OPENAI_BASE_URL       Base URL for OpenAI-compatible API (e.g., Ollama, Together)
-  OPENAI_MODEL          Model name
+${BOLD}Controls:${RESET}
+  ${CYAN}Tab${RESET}                   Switch between SQL and AI modes
+  ${CYAN}Ctrl+C${RESET}                Exit
 
-Examples:
-  wsql                          # Start with filesystem storage in ./wsql-data
-  wsql ./mydb                   # Use ./mydb as database directory
-  wsql --memory                 # Use in-memory storage
-  wsql --ai                     # Enable AI mode
-  wsql --ai --base-url http://localhost:11434/v1  # Use Ollama
-
-Commands (in SQL mode):
-  .tables                       List all tables
-  .schema <table>               Show table schema
-  .ai                           Switch to AI mode
-  .sql                          Switch to SQL mode
-  .quit                         Exit
-
-Commands (in AI mode):
-  .sql                          Switch to SQL mode
-  .quit                         Exit
-  Any text                      Natural language query
+${BOLD}Slash Commands:${RESET}
+  /model <name>         Set AI model
+  /api-key <key>        Set OpenAI API key
+  /base-url <url>       Set OpenAI base URL
+  /config               Show configuration
+  /tables               List all tables
+  /schema <table>       Show table schema
+  /help                 Show this help
+  /quit                 Exit
 `);
 }
 
-function printBanner(options: CliOptions): void {
+function clearScreen(): void {
+  process.stdout.write('\x1b[2J\x1b[H');
+}
+
+function moveCursor(row: number, col: number): void {
+  process.stdout.write(`\x1b[${row};${col}H`);
+}
+
+function saveCursor(): void {
+  process.stdout.write('\x1b[s');
+}
+
+function restoreCursor(): void {
+  process.stdout.write('\x1b[u');
+}
+
+function drawStatusBar(): void {
+  saveCursor();
+
+  // Move to bottom line
+  moveCursor(terminalHeight, 1);
+
+  // Build status bar content
+  const modeLabel = currentMode === 'ai'
+    ? `${BG_CYAN}${WHITE}${BOLD} AI ${RESET}`
+    : `${BG_YELLOW}${WHITE}${BOLD} SQL ${RESET}`;
+
+  const tabHint = `${DIM}Tab${RESET}${GRAY} to switch${RESET}`;
+  const storageInfo = `${GRAY}${config.memory ? 'memory' : config.dbPath}${RESET}`;
+  const modelInfo = currentMode === 'ai' && config.apiKey ? `${GRAY}${config.model}${RESET}` : '';
+
+  // Calculate spacing
+  const leftPart = ` ${modeLabel} ${tabHint}`;
+  const rightPart = modelInfo ? `${modelInfo}  ${storageInfo} ` : `${storageInfo} `;
+
+  // Get visible length (without ANSI codes)
+  const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
+  const leftLen = stripAnsi(leftPart).length;
+  const rightLen = stripAnsi(rightPart).length;
+  const padding = Math.max(0, terminalWidth - leftLen - rightLen);
+
+  // Draw the status bar
+  process.stdout.write(`${BG_GRAY}${leftPart}${' '.repeat(padding)}${rightPart}${RESET}`);
+
+  restoreCursor();
+}
+
+function printBanner(): void {
   console.log(`
-┌─────────────────────────────────────────┐
-│           WorkerSQL CLI                 │
-│   Lightweight SQL + AI Database         │
-└─────────────────────────────────────────┘
+${BOLD}┌─────────────────────────────────────────┐${RESET}
+${BOLD}│${RESET}           ${CYAN}WorkerSQL CLI${RESET}                 ${BOLD}│${RESET}
+${BOLD}│${RESET}   ${DIM}Lightweight SQL + AI Database${RESET}         ${BOLD}│${RESET}
+${BOLD}└─────────────────────────────────────────┘${RESET}
 `);
-  console.log(`Storage: ${options.memory ? 'memory' : options.dbPath}`);
-  console.log(`Mode: ${options.aiMode ? 'AI' : 'SQL'}`);
-  if (options.aiMode) {
-    console.log(`Model: ${options.model}`);
-    console.log(`API: ${options.baseUrl || 'https://api.openai.com/v1'}`);
+  console.log(`${DIM}Type ${RESET}/help${DIM} for commands${RESET}\n`);
+}
+
+function getPrompt(): string {
+  if (currentMode === 'ai') {
+    return `${CYAN}>${RESET} `;
   }
-  console.log(`\nType .help for commands, .quit to exit\n`);
+  return `${YELLOW}>${RESET} `;
 }
 
 function formatTable(rows: Record<string, unknown>[]): string {
-  if (rows.length === 0) return '(empty result set)';
+  if (rows.length === 0) return `${DIM}(empty result set)${RESET}`;
 
   const columns = Object.keys(rows[0]);
   const colWidths: Record<string, number> = {};
 
-  // Calculate column widths
   for (const col of columns) {
     colWidths[col] = col.length;
     for (const row of rows) {
       const val = String(row[col] ?? 'NULL');
-      colWidths[col] = Math.max(colWidths[col], val.length);
+      colWidths[col] = Math.max(colWidths[col], Math.min(val.length, 40));
     }
   }
 
-  // Build table
   const lines: string[] = [];
-  const separator = '+' + columns.map(c => '-'.repeat(colWidths[c] + 2)).join('+') + '+';
-  const header = '|' + columns.map(c => ` ${c.padEnd(colWidths[c])} `).join('|') + '|';
+  const separator = `${DIM}+${columns.map(c => '-'.repeat(colWidths[c] + 2)).join('+')}+${RESET}`;
+  const header = `${DIM}|${RESET}${columns.map(c => ` ${BOLD}${c.padEnd(colWidths[c])}${RESET} `).join(`${DIM}|${RESET}`)}${DIM}|${RESET}`;
 
   lines.push(separator);
   lines.push(header);
   lines.push(separator);
 
   for (const row of rows) {
-    const rowStr = '|' + columns.map(c => {
-      const val = String(row[c] ?? 'NULL');
+    const rowStr = `${DIM}|${RESET}` + columns.map(c => {
+      let val = String(row[c] ?? `${DIM}NULL${RESET}`);
+      if (val.length > 40) val = val.substring(0, 37) + '...';
       return ` ${val.padEnd(colWidths[c])} `;
-    }).join('|') + '|';
+    }).join(`${DIM}|${RESET}`) + `${DIM}|${RESET}`;
     lines.push(rowStr);
   }
 
   lines.push(separator);
-  lines.push(`${rows.length} row(s)`);
+  lines.push(`${DIM}${rows.length} row(s)${RESET}`);
 
   return lines.join('\n');
 }
 
+function reinitAIClient(): void {
+  if (config.apiKey) {
+    aiClient = new AIClient({
+      db,
+      apiKey: config.apiKey,
+      baseURL: config.baseUrl,
+      model: config.model,
+    });
+  }
+}
+
+async function handleSlashCommand(line: string): Promise<boolean> {
+  const parts = line.split(/\s+/);
+  const cmd = parts[0].toLowerCase();
+  const arg = parts.slice(1).join(' ');
+
+  switch (cmd) {
+    case '/help':
+      showHelp();
+      return true;
+
+    case '/config':
+      console.log(`\n${BOLD}Configuration:${RESET}`);
+      console.log(`  ${DIM}Mode:${RESET}     ${currentMode === 'ai' ? CYAN : YELLOW}${currentMode}${RESET}`);
+      console.log(`  ${DIM}Storage:${RESET}  ${config.memory ? 'memory' : config.dbPath}`);
+      console.log(`  ${DIM}API Key:${RESET}  ${config.apiKey ? GREEN + '●' + RESET + ' configured' : DIM + '○ not set' + RESET}`);
+      console.log(`  ${DIM}Base URL:${RESET} ${config.baseUrl || 'https://api.openai.com/v1'}`);
+      console.log(`  ${DIM}Model:${RESET}    ${config.model}\n`);
+      return true;
+
+    case '/model':
+      if (!arg) {
+        console.log(`${DIM}Current model:${RESET} ${config.model}`);
+      } else {
+        config.model = arg;
+        reinitAIClient();
+        console.log(`${GREEN}✓${RESET} Model set to ${BOLD}${config.model}${RESET}`);
+      }
+      return true;
+
+    case '/api-key':
+      if (!arg) {
+        console.log(`${DIM}API key:${RESET} ${config.apiKey ? '***' + config.apiKey.slice(-4) : 'not set'}`);
+      } else {
+        config.apiKey = arg;
+        reinitAIClient();
+        console.log(`${GREEN}✓${RESET} API key updated`);
+      }
+      return true;
+
+    case '/base-url':
+      if (!arg) {
+        console.log(`${DIM}Base URL:${RESET} ${config.baseUrl || 'https://api.openai.com/v1'}`);
+      } else {
+        config.baseUrl = arg;
+        reinitAIClient();
+        console.log(`${GREEN}✓${RESET} Base URL set to ${BOLD}${config.baseUrl}${RESET}`);
+      }
+      return true;
+
+    case '/tables':
+      try {
+        const tables = await db.tables.list();
+        if (tables.length === 0) {
+          console.log(`${DIM}No tables.${RESET}`);
+        } else {
+          console.log(`\n${BOLD}Tables:${RESET}`);
+          for (const t of tables) {
+            console.log(`  ${YELLOW}●${RESET} ${t}`);
+          }
+          console.log('');
+        }
+      } catch (err) {
+        console.error(`${BOLD}Error:${RESET} ${(err as Error).message}`);
+      }
+      return true;
+
+    case '/schema':
+      if (!arg) {
+        console.log(`${DIM}Usage:${RESET} /schema <table_name>`);
+      } else {
+        try {
+          const schema = await db.tables.describe(arg);
+          if (!schema) {
+            console.log(`${DIM}Table '${arg}' not found.${RESET}`);
+          } else {
+            console.log(`\n${BOLD}Table: ${arg}${RESET}`);
+            console.log(`${DIM}Columns:${RESET}`);
+            for (const col of schema.columns) {
+              const flags: string[] = [];
+              if (col.primaryKey) flags.push(`${CYAN}PK${RESET}`);
+              if (col.autoIncrement) flags.push(`${GREEN}AUTO${RESET}`);
+              if (!col.nullable) flags.push(`${YELLOW}NOT NULL${RESET}`);
+              const flagStr = flags.length > 0 ? ` ${flags.join(' ')}` : '';
+              console.log(`  ${BOLD}${col.name}${RESET} ${DIM}${col.type}${RESET}${flagStr}`);
+            }
+            console.log('');
+          }
+        } catch (err) {
+          console.error(`${BOLD}Error:${RESET} ${(err as Error).message}`);
+        }
+      }
+      return true;
+
+    case '/clear':
+      clearScreen();
+      printBanner();
+      return true;
+
+    case '/quit':
+    case '/exit':
+      console.log(`\n${DIM}Goodbye!${RESET}\n`);
+      process.exit(0);
+
+    default:
+      if (line.startsWith('/')) {
+        console.log(`${DIM}Unknown command:${RESET} ${cmd}`);
+        console.log(`${DIM}Type${RESET} /help ${DIM}for available commands${RESET}`);
+        return true;
+      }
+      return false;
+  }
+}
+
+async function handleInput(line: string): Promise<void> {
+  line = line.trim();
+  if (!line) return;
+
+  // Handle slash commands
+  if (line.startsWith('/')) {
+    await handleSlashCommand(line);
+    return;
+  }
+
+  // Execute based on mode
+  if (currentMode === 'sql') {
+    try {
+      const result = await db.query(line);
+      if (result.rows && result.rows.length > 0) {
+        console.log(formatTable(result.rows));
+      } else if (result.affectedRows !== undefined) {
+        console.log(`${GREEN}✓${RESET} ${result.affectedRows} row(s) affected`);
+        if (result.lastInsertId) {
+          console.log(`${DIM}Last insert ID:${RESET} ${result.lastInsertId}`);
+        }
+      } else {
+        console.log(`${GREEN}✓${RESET} Query OK`);
+      }
+    } catch (err) {
+      console.error(`${BOLD}Error:${RESET} ${(err as Error).message}`);
+    }
+  } else {
+    // AI mode
+    if (!config.apiKey) {
+      console.log(`${DIM}AI mode requires an API key.${RESET}`);
+      console.log(`Use ${BOLD}/api-key <key>${RESET} to set it.`);
+      return;
+    }
+
+    if (!aiClient) {
+      reinitAIClient();
+    }
+
+    try {
+      process.stdout.write(`${DIM}Thinking...${RESET}`);
+      const response = await aiClient!.chat(line);
+      process.stdout.write('\r\x1b[K');
+      console.log(response);
+    } catch (err) {
+      process.stdout.write('\r\x1b[K');
+      console.error(`${BOLD}AI Error:${RESET} ${(err as Error).message}`);
+    }
+  }
+}
+
+function switchMode(): void {
+  currentMode = currentMode === 'sql' ? 'ai' : 'sql';
+  const modeLabel = currentMode === 'ai' ? `${CYAN}AI${RESET}` : `${YELLOW}SQL${RESET}`;
+  console.log(`\n${DIM}Switched to${RESET} ${modeLabel} ${DIM}mode${RESET}`);
+  drawStatusBar();
+}
+
+function setupTerminal(): void {
+  // Handle terminal resize
+  process.stdout.on('resize', () => {
+    terminalHeight = process.stdout.rows || 24;
+    terminalWidth = process.stdout.columns || 80;
+    drawStatusBar();
+  });
+
+  // Reserve space for status bar
+  process.stdout.write('\n'.repeat(1));
+}
+
 async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+  parseArgs(process.argv.slice(2));
 
   // Initialize database
-  const db = new WorkerSQL({
-    storage: options.memory ? 'memory' : 'filesystem',
-    directory: options.memory ? undefined : options.dbPath,
+  db = new WorkerSQL({
+    storage: config.memory ? 'memory' : 'filesystem',
+    directory: config.memory ? undefined : config.dbPath,
   });
   await db.init();
 
-  // Initialize AI if needed
-  let aiClient: AIClient | null = null;
+  // Initialize AI client if API key is available
+  if (config.apiKey) {
+    reinitAIClient();
+  }
 
-  if (options.aiMode) {
-    if (!options.apiKey) {
-      console.error('Error: AI mode requires an API key.');
-      console.error('Set OPENAI_API_KEY environment variable or use --api-key flag.');
-      process.exit(1);
-    }
-    aiClient = new AIClient({
-      db,
-      apiKey: options.apiKey,
-      baseURL: options.baseUrl,
-      model: options.model,
+  clearScreen();
+  printBanner();
+  setupTerminal();
+
+  // Set up readline with custom key handling
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: true,
+  });
+
+  // Enable keypress events
+  if (process.stdin.isTTY) {
+    readline.emitKeypressEvents(process.stdin, rl);
+    process.stdin.setRawMode(true);
+
+    process.stdin.on('keypress', (_str, key) => {
+      if (key && key.name === 'tab') {
+        // Prevent tab from being inserted
+        process.stdout.write('\r\x1b[K');
+        switchMode();
+        rl.prompt();
+      }
     });
   }
 
-  printBanner(options);
-
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
+  rl.on('line', async (line) => {
+    await handleInput(line);
+    drawStatusBar();
+    rl.prompt();
   });
 
-  let currentMode = options.aiMode ? 'ai' : 'sql';
-
-  const prompt = (): string => currentMode === 'ai' ? 'ai> ' : 'sql> ';
-
-  const askQuestion = (): void => {
-    rl.question(prompt(), async (input) => {
-      const line = input.trim();
-
-      if (!line) {
-        askQuestion();
-        return;
-      }
-
-      // Handle commands
-      if (line === '.quit' || line === '.exit' || line === 'exit') {
-        console.log('Goodbye!');
-        rl.close();
-        process.exit(0);
-      }
-
-      if (line === '.help') {
-        showHelp();
-        askQuestion();
-        return;
-      }
-
-      if (line === '.ai') {
-        if (!options.apiKey) {
-          console.log('Error: AI mode requires an API key. Restart with --api-key or set OPENAI_API_KEY.');
-        } else {
-          currentMode = 'ai';
-          if (!aiClient) {
-            aiClient = new AIClient({
-              db,
-              apiKey: options.apiKey!,
-              baseURL: options.baseUrl,
-              model: options.model,
-            });
-          }
-          console.log('Switched to AI mode. Ask questions in natural language.');
-        }
-        askQuestion();
-        return;
-      }
-
-      if (line === '.sql') {
-        currentMode = 'sql';
-        console.log('Switched to SQL mode. Enter SQL statements.');
-        askQuestion();
-        return;
-      }
-
-      if (line === '.tables') {
-        try {
-          const tables = await db.tables.list();
-          if (tables.length === 0) {
-            console.log('No tables.');
-          } else {
-            console.log('Tables:');
-            for (const t of tables) {
-              console.log(`  ${t}`);
-            }
-          }
-        } catch (err) {
-          console.error('Error:', (err as Error).message);
-        }
-        askQuestion();
-        return;
-      }
-
-      if (line.startsWith('.schema')) {
-        const tableName = line.split(/\s+/)[1];
-        if (!tableName) {
-          console.log('Usage: .schema <table_name>');
-        } else {
-          try {
-            const schema = await db.tables.describe(tableName);
-            if (!schema) {
-              console.log(`Table '${tableName}' not found.`);
-            } else {
-              console.log(`Table: ${tableName}`);
-              console.log('Columns:');
-              for (const col of schema.columns) {
-                const pk = col.primaryKey ? ' PRIMARY KEY' : '';
-                const auto = col.autoIncrement ? ' AUTO_INCREMENT' : '';
-                const nn = !col.nullable ? ' NOT NULL' : '';
-                const def = col.defaultValue !== undefined ? ` DEFAULT ${col.defaultValue}` : '';
-                console.log(`  ${col.name} ${col.type}${pk}${auto}${nn}${def}`);
-              }
-            }
-          } catch (err) {
-            console.error('Error:', (err as Error).message);
-          }
-        }
-        askQuestion();
-        return;
-      }
-
-      // Execute based on mode
-      if (currentMode === 'sql') {
-        try {
-          const result = await db.query(line);
-          if (result.rows && result.rows.length > 0) {
-            console.log(formatTable(result.rows));
-          } else if (result.affectedRows !== undefined) {
-            console.log(`Query OK, ${result.affectedRows} row(s) affected`);
-            if (result.lastInsertId) {
-              console.log(`Last insert ID: ${result.lastInsertId}`);
-            }
-          } else {
-            console.log('Query OK');
-          }
-        } catch (err) {
-          console.error('Error:', (err as Error).message);
-        }
-      } else {
-        // AI mode
-        if (!aiClient) {
-          console.log('AI client not initialized.');
-          askQuestion();
-          return;
-        }
-
-        try {
-          process.stdout.write('Thinking...');
-          const response = await aiClient.chat(line);
-          process.stdout.write('\r' + ' '.repeat(20) + '\r');
-          console.log(response);
-        } catch (err) {
-          process.stdout.write('\r' + ' '.repeat(20) + '\r');
-          console.error('AI Error:', (err as Error).message);
-        }
-      }
-
-      askQuestion();
-    });
-  };
-
-  // Handle SIGINT gracefully
   rl.on('close', () => {
-    console.log('\nGoodbye!');
+    // Clear status bar area
+    moveCursor(terminalHeight, 1);
+    process.stdout.write('\x1b[K');
+    console.log(`\n${DIM}Goodbye!${RESET}\n`);
     process.exit(0);
   });
 
-  askQuestion();
+  // Custom prompt that updates dynamically
+  rl.setPrompt(getPrompt());
+  const originalPrompt = rl.prompt.bind(rl);
+  rl.prompt = () => {
+    rl.setPrompt(getPrompt());
+    originalPrompt();
+  };
+
+  drawStatusBar();
+  rl.prompt();
 }
 
 main().catch(err => {
-  console.error('Fatal error:', err.message);
+  console.error(`${BOLD}Fatal error:${RESET} ${err.message}`);
   process.exit(1);
 });
