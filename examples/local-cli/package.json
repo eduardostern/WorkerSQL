@@ -1,0 +1,13 @@
+{
+  "name": "workersql-cli-example",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Task manager CLI using WorkerSQL",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "workersql": "file:../.."
+  }
+}

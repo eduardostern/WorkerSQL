@@ -1,0 +1,60 @@
+{
+  "name": "workersql",
+  "version": "0.1.0",
+  "description": "Lightweight SQL database for serverless environments with AI integration",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./ai": {
+      "import": "./dist/ai/index.js",
+      "types": "./dist/ai/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src tests",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm run test:run"
+  },
+  "keywords": [
+    "sql",
+    "database",
+    "serverless",
+    "cloudflare",
+    "workers",
+    "vercel",
+    "ai",
+    "openai"
+  ],
+  "author": "Eduardo Stern",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eduardostern/WorkerSQL.git"
+  },
+  "bugs": {
+    "url": "https://github.com/eduardostern/WorkerSQL/issues"
+  },
+  "homepage": "https://github.com/eduardostern/WorkerSQL#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  }
+}
