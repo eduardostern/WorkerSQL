@@ -15,6 +15,9 @@
       "types": "./dist/ai/index.d.ts"
     }
   },
+  "bin": {
+    "wsql": "./dist/cli.js"
+  },
   "files": [
     "dist"
   ],

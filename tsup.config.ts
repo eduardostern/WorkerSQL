@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     'index': 'src/index.ts',
     'ai/index': 'src/ai/index.ts',
+    'cli': 'src/cli.ts',
   },
   format: ['esm'],
   dts: true,
@@ -13,5 +14,5 @@ export default defineConfig({
   minify: false,
   treeshake: true,
   target: 'es2022',
-  external: ['node:fs', 'node:fs/promises', 'node:path'],
+  external: ['node:fs', 'node:fs/promises', 'node:path', 'node:readline'],
 });
