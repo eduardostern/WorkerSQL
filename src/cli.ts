@@ -88,16 +88,31 @@ ${BOLD}Options:${RESET}
 ${BOLD}Controls:${RESET}
   ${CYAN}Tab${RESET}                   Switch between SQL and AI modes
   ${CYAN}Ctrl+C${RESET}                Exit
+`);
+}
 
+function showCommands(): void {
+  console.log(`
 ${BOLD}Slash Commands:${RESET}
-  /model <name>         Set AI model
-  /api-key <key>        Set OpenAI API key
-  /base-url <url>       Set OpenAI base URL
-  /config               Show configuration
-  /tables               List all tables
-  /schema <table>       Show table schema
-  /help                 Show this help
-  /quit                 Exit
+
+${CYAN}Configuration:${RESET}
+  ${BOLD}/model${RESET} <name>         Set AI model (e.g., gpt-4o, claude-3-sonnet)
+  ${BOLD}/api-key${RESET} <key>        Set OpenAI-compatible API key
+  ${BOLD}/base-url${RESET} <url>       Set API base URL (for Ollama, Together, etc.)
+  ${BOLD}/storage${RESET} <path>       Switch to filesystem storage at <path>
+  ${BOLD}/storage${RESET} memory       Switch to in-memory storage
+  ${BOLD}/config${RESET}               Show current configuration
+
+${CYAN}Database:${RESET}
+  ${BOLD}/tables${RESET}               List all tables in the database
+  ${BOLD}/schema${RESET} <table>       Show schema for a table
+  ${BOLD}/status${RESET}               Show database status and statistics
+
+${CYAN}Interface:${RESET}
+  ${BOLD}/clear${RESET}                Clear the screen
+  ${BOLD}/help${RESET}                 Show CLI help and options
+  ${BOLD}/commands${RESET}             Show this command list
+  ${BOLD}/quit${RESET}                 Exit the CLI
 `);
 }
 
@@ -221,6 +236,67 @@ async function handleSlashCommand(line: string): Promise<boolean> {
   switch (cmd) {
     case '/help':
       showHelp();
+      showCommands();
+      return true;
+
+    case '/commands':
+      showCommands();
+      return true;
+
+    case '/status':
+      try {
+        const tables = await db.tables.list();
+        let totalRows = 0;
+        const tableInfo: { name: string; rows: number }[] = [];
+
+        for (const tableName of tables) {
+          const result = await db.query(`SELECT COUNT(*) as count FROM ${tableName}`);
+          const count = result.rows[0]?.count as number || 0;
+          totalRows += count;
+          tableInfo.push({ name: tableName, rows: count });
+        }
+
+        console.log(`\n${BOLD}Database Status:${RESET}`);
+        console.log(`  ${DIM}Storage:${RESET}  ${config.memory ? `${CYAN}memory${RESET}` : config.dbPath}`);
+        console.log(`  ${DIM}Tables:${RESET}   ${tables.length}`);
+        console.log(`  ${DIM}Rows:${RESET}     ${totalRows}`);
+
+        if (tableInfo.length > 0) {
+          console.log(`\n${DIM}Tables:${RESET}`);
+          for (const t of tableInfo) {
+            console.log(`  ${YELLOW}●${RESET} ${t.name} ${DIM}(${t.rows} rows)${RESET}`);
+          }
+        }
+        console.log('');
+      } catch (err) {
+        console.error(`${BOLD}Error:${RESET} ${(err as Error).message}`);
+      }
+      return true;
+
+    case '/storage':
+      if (!arg) {
+        console.log(`${DIM}Current storage:${RESET} ${config.memory ? 'memory' : config.dbPath}`);
+        console.log(`${DIM}Usage:${RESET} /storage <path> ${DIM}or${RESET} /storage memory`);
+      } else if (arg === 'memory') {
+        if (config.memory) {
+          console.log(`${DIM}Already using memory storage.${RESET}`);
+        } else {
+          config.memory = true;
+          db = new WorkerSQL({ storage: 'memory' });
+          await db.init();
+          reinitAIClient();
+          console.log(`${GREEN}✓${RESET} Switched to ${CYAN}memory${RESET} storage`);
+          console.log(`${DIM}Note: Previous data is no longer accessible.${RESET}`);
+        }
+      } else {
+        config.memory = false;
+        config.dbPath = arg;
+        db = new WorkerSQL({ storage: 'filesystem', directory: arg });
+        await db.init();
+        reinitAIClient();
+        console.log(`${GREEN}✓${RESET} Switched to filesystem storage at ${BOLD}${arg}${RESET}`);
+      }
+      drawStatusBar();
       return true;
 
     case '/config':
