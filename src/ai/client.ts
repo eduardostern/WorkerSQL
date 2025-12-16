@@ -1,6 +1,6 @@
 import { WorkerSQL } from '../index.js';
 import { AIBridge } from './bridge.js';
-import { getDefaultSystemPrompt } from './tools.js';
+import { getDefaultSystemPrompt, getCompactSystemPrompt } from './tools.js';
 import {
   AIClientOptions,
   ChatMessage,
@@ -10,6 +10,14 @@ import {
 
 export interface AIClientConfig extends AIClientOptions {
   db: WorkerSQL;
+  /**
+   * Enable compact mode for minimal token usage
+   */
+  compact?: boolean;
+  /**
+   * Maximum conversation history length (default: unlimited)
+   */
+  maxHistory?: number;
 }
 
 /**
@@ -24,15 +32,19 @@ export class AIClient {
   private temperature: number;
   private bridge: AIBridge;
   private conversationHistory: ChatMessage[] = [];
+  private compact: boolean;
+  private maxHistory: number;
 
   constructor(config: AIClientConfig) {
     this.apiKey = config.apiKey;
     this.baseURL = config.baseURL ?? 'https://api.openai.com/v1';
     this.model = config.model ?? 'gpt-4o-mini';
-    this.systemPrompt = config.systemPrompt ?? getDefaultSystemPrompt();
-    this.maxTokens = config.maxTokens ?? 4096;
+    this.compact = config.compact ?? false;
+    this.maxHistory = config.maxHistory ?? 50;
+    this.systemPrompt = config.systemPrompt ?? (this.compact ? getCompactSystemPrompt() : getDefaultSystemPrompt());
+    this.maxTokens = config.maxTokens ?? (this.compact ? 1024 : 4096);
     this.temperature = config.temperature ?? 0.7;
-    this.bridge = new AIBridge(config.db);
+    this.bridge = new AIBridge(config.db, { compact: this.compact });
   }
 
   /**
@@ -41,6 +53,11 @@ export class AIClient {
   async chat(message: string): Promise<string> {
     // Add user message to history
     this.conversationHistory.push({ role: 'user', content: message });
+
+    // Trim history if exceeds max
+    if (this.conversationHistory.length > this.maxHistory) {
+      this.conversationHistory = this.conversationHistory.slice(-this.maxHistory);
+    }
 
     // Build messages array with system prompt
     const messages: ChatMessage[] = [

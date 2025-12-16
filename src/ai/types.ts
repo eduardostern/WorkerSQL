@@ -13,7 +13,7 @@ export interface OpenAITool {
 
 export interface OpenAIParameter {
   type: string;
-  description: string;
+  description?: string;
   enum?: string[];
   items?: { type: string };
   default?: unknown;

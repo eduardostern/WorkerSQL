@@ -5,76 +5,142 @@ import { OpenAITool } from './types.js';
  */
 export function getToolDefinitions(): OpenAITool[] {
   return [
+    // Schema discovery tools
     {
       type: 'function',
       function: {
         name: 'list_tables',
-        description: 'List all tables in the database. Use this to discover what data is available.',
-        parameters: {
-          type: 'object',
-          properties: {},
-          required: [],
-        },
+        description: 'List all tables in the database.',
+        parameters: { type: 'object', properties: {}, required: [] },
       },
     },
     {
       type: 'function',
       function: {
         name: 'describe_table',
-        description: 'Get the schema of a table including column names, types, and constraints. Use this to understand the structure of a table before querying it.',
+        description: 'Get table schema (columns, types).',
         parameters: {
           type: 'object',
           properties: {
-            table_name: {
-              type: 'string',
-              description: 'The name of the table to describe',
-            },
+            table: { type: 'string', description: 'Table name' },
           },
-          required: ['table_name'],
+          required: ['table'],
         },
       },
     },
+
+    // Record-level tools (simple, token-efficient)
+    {
+      type: 'function',
+      function: {
+        name: 'get_record',
+        description: 'Get a single record by ID. Fast direct lookup.',
+        parameters: {
+          type: 'object',
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            id: { type: 'number', description: 'Record ID' },
+          },
+          required: ['table', 'id'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'find_records',
+        description: 'Find records matching filters. Use for simple queries.',
+        parameters: {
+          type: 'object',
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            where: {
+              type: 'object',
+              description: 'Filter conditions as {column: value} or {column: {op: value}} where op is eq/ne/gt/gte/lt/lte/like',
+            },
+            order_by: { type: 'string', description: 'Column to sort by' },
+            order: { type: 'string', description: 'asc or desc' },
+            limit: { type: 'number', description: 'Max rows to return' },
+          },
+          required: ['table'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'count_records',
+        description: 'Count records matching filters. Fast count operation.',
+        parameters: {
+          type: 'object',
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            where: { type: 'object', description: 'Filter conditions' },
+          },
+          required: ['table'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'insert_record',
+        description: 'Insert a new record.',
+        parameters: {
+          type: 'object',
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            data: { type: 'object', description: 'Record data as {column: value}' },
+          },
+          required: ['table', 'data'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'update_record',
+        description: 'Update a record by ID.',
+        parameters: {
+          type: 'object',
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            id: { type: 'number', description: 'Record ID' },
+            data: { type: 'object', description: 'Fields to update' },
+          },
+          required: ['table', 'id', 'data'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'delete_record',
+        description: 'Delete a record by ID.',
+        parameters: {
+          type: 'object',
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            id: { type: 'number', description: 'Record ID' },
+          },
+          required: ['table', 'id'],
+        },
+      },
+    },
+
+    // SQL tool (for complex queries: JOINs, GROUP BY, aggregations)
     {
       type: 'function',
       function: {
         name: 'execute_sql',
-        description: 'Execute a SQL query against the database. Supports SELECT, INSERT, UPDATE, DELETE, and DDL statements. Use parameterized queries with ? placeholders for user-provided values to prevent SQL injection.',
+        description: 'Execute raw SQL. Use for complex queries (JOINs, GROUP BY, aggregations). Use ? placeholders for params.',
         parameters: {
           type: 'object',
           properties: {
-            sql: {
-              type: 'string',
-              description: 'The SQL query to execute. Use ? as placeholders for parameters.',
-            },
-            params: {
-              type: 'array',
-              description: 'Array of parameter values to substitute for ? placeholders in the SQL query',
-              items: { type: 'string' },
-            },
+            sql: { type: 'string', description: 'SQL query' },
+            params: { type: 'array', items: { type: 'string' }, description: 'Parameter values' },
           },
           required: ['sql'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'sample_data',
-        description: 'Get a sample of rows from a table to understand its content and data patterns. Useful before writing complex queries.',
-        parameters: {
-          type: 'object',
-          properties: {
-            table_name: {
-              type: 'string',
-              description: 'The name of the table to sample',
-            },
-            limit: {
-              type: 'number',
-              description: 'Maximum number of rows to return (default: 5)',
-              default: 5,
-            },
-          },
-          required: ['table_name'],
         },
       },
     },
@@ -85,19 +151,114 @@ export function getToolDefinitions(): OpenAITool[] {
  * Get the default system prompt for AI database interactions
  */
 export function getDefaultSystemPrompt(): string {
-  return `You are a helpful database assistant. You have access to a SQL database and can execute queries to answer user questions.
+  return `You are a database assistant with access to these tools:
 
-When answering questions:
-1. First use list_tables to see what tables are available
-2. Use describe_table to understand the structure of relevant tables
-3. Use sample_data to see example data if needed
-4. Use execute_sql to run queries and get results
-5. Always explain what you found in natural language
+Record-level (use for simple operations):
+- list_tables: See available tables
+- describe_table: Get table schema
+- get_record: Get single record by ID
+- find_records: Query with filters
+- count_records: Count matching records
+- insert_record, update_record, delete_record: Modify data
 
-Important guidelines:
-- Use parameterized queries (? placeholders) for any user-provided values
-- Start with simple queries and refine if needed
-- If a query fails, explain why and try an alternative approach
-- Be concise but thorough in your explanations
-- Format results in a readable way (tables, lists, etc.)`;
+SQL (use for complex queries):
+- execute_sql: JOINs, GROUP BY, aggregations, subqueries
+
+Choose the simplest tool for each task. Be concise.`;
+}
+
+/**
+ * Compact system prompt for token-efficient mode
+ */
+export function getCompactSystemPrompt(): string {
+  return `DB assistant. Tools: list_tables, describe_table, get_record, find_records, count_records, execute_sql. Be brief.`;
+}
+
+/**
+ * Generate compact tool definitions (fewer tokens)
+ */
+export function getCompactToolDefinitions(): OpenAITool[] {
+  return [
+    {
+      type: 'function',
+      function: {
+        name: 'list_tables',
+        description: 'List tables',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'describe_table',
+        description: 'Get schema',
+        parameters: {
+          type: 'object',
+          properties: { table: { type: 'string' } },
+          required: ['table'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_record',
+        description: 'Get by ID',
+        parameters: {
+          type: 'object',
+          properties: {
+            table: { type: 'string' },
+            id: { type: 'number' },
+          },
+          required: ['table', 'id'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'find_records',
+        description: 'Query records',
+        parameters: {
+          type: 'object',
+          properties: {
+            table: { type: 'string' },
+            where: { type: 'object' },
+            limit: { type: 'number' },
+          },
+          required: ['table'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'count_records',
+        description: 'Count records',
+        parameters: {
+          type: 'object',
+          properties: {
+            table: { type: 'string' },
+            where: { type: 'object' },
+          },
+          required: ['table'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'execute_sql',
+        description: 'Run SQL',
+        parameters: {
+          type: 'object',
+          properties: {
+            sql: { type: 'string' },
+            params: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['sql'],
+        },
+      },
+    },
+  ];
 }
